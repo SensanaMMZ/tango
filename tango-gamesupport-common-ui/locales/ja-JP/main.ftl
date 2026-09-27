@@ -1,4 +1,5 @@
 play-play = プレイ
+play-training = トレーニング
 save-tab-cover = カバー
 save-review = 確認
 save-tab-folder = フォルダ

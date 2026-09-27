@@ -50,11 +50,9 @@ pub enum Action {
     /// other embedders (replay, opponent panel) pass `None` and
     /// the button isn't rendered.
     PlayClicked,
-    /// Embedder-defined "start training here" action, routed by the
-    /// play tab to `Effect::StartTraining`. Nothing raises it while the
-    /// Training button is hidden (see the actions row in [`super::view`]); the
-    /// route stays wired so restoring the button is a local change.
-    #[allow(dead_code)]
+    /// Embedder-defined "start training here" action. Rendered
+    /// alongside Play under the same `play_button` gating; the play tab
+    /// routes it to `Effect::StartTraining`.
     TrainingClicked,
     // ----- Folder editor (only emitted when `view`'s `editable` is set) -----
     /// Enter folder edit mode. The play tab seeds tag state via

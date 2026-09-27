@@ -1,4 +1,5 @@
 play-play = Jugar
+play-training = Entrenamiento
 save-tab-cover = Cubierta
 save-review = Revisar
 save-tab-folder = Folder

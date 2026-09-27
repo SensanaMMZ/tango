@@ -1,4 +1,5 @@
 play-play = 开始
+play-training = 训练
 save-tab-cover = 封面
 save-review = 查看
 save-tab-navicust = 领航定制

@@ -1,4 +1,5 @@
 play-play = Chơi
+play-training = Luyện tập
 save-tab-cover = Cover
 save-review = Xem
 save-tab-folder = Folder

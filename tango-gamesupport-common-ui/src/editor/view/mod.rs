@@ -184,9 +184,18 @@ pub fn view<'a>(
             ));
         }
         if let Some(enabled) = play_button {
-            // Training is hidden for now: the session, its action and
-            // everything behind [`Action::TrainingClicked`] are intact,
-            // so putting the button back is this block alone.
+            // Training sits next to Play under the same gating: a local
+            // link battle against the dummy, which the session can hand
+            // to a CPU opponent.
+            let training_label = row![lucide_icons::Icon::Dumbbell.widget(), text(t!(lang, "play-training"))]
+                .spacing(6)
+                .align_y(Alignment::Center);
+            let mut training_btn = button(training_label).padding([4, 10]).style(widgets::neutral);
+            if enabled {
+                training_btn = training_btn.on_press(Action::TrainingClicked);
+            }
+            actions = actions.push(training_btn);
+
             let label = row![lucide_icons::Icon::Play.widget(), text(t!(lang, "play-play"))]
                 .spacing(6)
                 .align_y(Alignment::Center);

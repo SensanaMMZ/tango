@@ -1,4 +1,5 @@
 play-play = Play
+play-training = Training
 save-tab-cover = Cover
 save-review = Review
 save-tab-navicust = NaviCust

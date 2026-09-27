@@ -1,4 +1,5 @@
 play-play = Spelen
+play-training = Training
 save-tab-cover = Omslag
 save-review = Bekijken
 save-tab-folder = Map
