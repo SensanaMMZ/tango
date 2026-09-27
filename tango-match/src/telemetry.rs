@@ -193,6 +193,40 @@ impl EventSink {
 /// (menus, the round intro before unit init).
 pub trait CorePoller<Core>: PollerState {
     fn poll(&mut self, core: &mut Core, events: &EventSink, round: u32) -> Option<CoreObs>;
+
+    /// This game's own readings beyond [`CoreObs`], for a consumer that
+    /// knows the game (a CPU opponent). Called right after a `poll` that
+    /// returned `Some`, on the same tick. `&self`: a detail is a pure read
+    /// of the core and carries no cross-tick state, so it needs nothing
+    /// from rollback. Games without one keep the default.
+    fn detail(&self, _core: &mut Core) -> Option<Detail> {
+        None
+    }
+}
+
+/// A game's own per-tick readings, opaque to everything but the consumer
+/// that knows the game and downcasts it. Shared telemetry stays
+/// game-neutral: fields that only one game has (a BN6 Cross, a chip
+/// hand) live in that game's crate, not in [`CoreObs`].
+///
+/// Like [`CoreObs::custom_self`], a core's detail may hold what only
+/// that core's own player can see (its hand); a consumer acting for one
+/// player must read only that player's core.
+pub type Detail = Arc<dyn GameDetail>;
+
+/// What every game's [`Detail`] offers without knowing the game: a way
+/// back to its concrete type, and a short human-readable summary for
+/// debug displays (what a CPU opponent sees).
+pub trait GameDetail: std::any::Any + Send + Sync + std::fmt::Debug {
+    /// A few lines describing the reading, for a debug overlay.
+    fn summary(&self) -> String;
+}
+
+impl dyn GameDetail {
+    /// The concrete reading, if it's a `T`.
+    pub fn downcast_ref<T: GameDetail>(&self) -> Option<&T> {
+        (self as &dyn std::any::Any).downcast_ref()
+    }
 }
 
 /// Rollback for a poller, by cloning it. Blanket over every
@@ -233,10 +267,13 @@ impl<Core, F: FnMut(&mut Core) -> Option<CoreObs> + Clone + Send + 'static> Core
 /// Both players' merged observation for one simulated tick: the shared
 /// sim's units from player 0's core, per-player custom flags from each
 /// side's own core. Absolute player order.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BattleObs {
     pub units: [UnitObs; 2],
     pub custom: [bool; 2],
+    /// Each core's [`Detail`], by absolute player: `detail[p]` came from
+    /// player `p`'s own core, so it may hold what only `p` can see.
+    pub detail: [Option<Detail>; 2],
 }
 
 /// A tick-stamped event, as the store records it. Lifecycle events are
@@ -406,6 +443,9 @@ pub struct Telemetry<Core> {
     /// first observation: the store's ring starts at tick 1, and this
     /// is what sits under it.
     fresh: [PollerSnapshot; 2],
+    /// This tick's [`Detail`]s, from `poll` until `observe` folds them
+    /// in. Never outlives the tick, so rollback never sees it.
+    details: [Option<Detail>; 2],
 }
 
 impl<Core> Telemetry<Core> {
@@ -413,7 +453,9 @@ impl<Core> Telemetry<Core> {
     /// a link hands out one core at a time, so the two reads cannot
     /// share a borrow.
     pub fn poll(&mut self, player: usize, core: &mut Core) -> Option<CoreObs> {
-        self.pollers[player].poll(core, &self.events, self.rounds)
+        let obs = self.pollers[player].poll(core, &self.events, self.rounds);
+        self.details[player] = obs.and_then(|_| self.pollers[player].detail(core));
+        obs
     }
 
     /// Fold one tick's readings into the store: merge the levels,
@@ -423,9 +465,10 @@ impl<Core> Telemetry<Core> {
         let obs = match (obs0, obs1) {
             (Some(c0), Some(c1)) => Some(BattleObs {
                 // The sim's own readings come from player 0's core; the
-                // per-core custom answers pair up.
+                // per-core custom answers (and details) pair up.
                 units: c0.units,
                 custom: [c0.custom_self, c1.custom_self],
+                detail: std::mem::take(&mut self.details),
             }),
             _ => None,
         };
@@ -569,6 +612,7 @@ impl<Core> Telemetry<Core> {
                 events,
                 store: store.clone(),
                 rounds,
+                details: [None, None],
             },
             store,
         )

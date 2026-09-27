@@ -19,7 +19,7 @@
 //! runs in perfect lockstep.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::local::{Pacing, Surfaces};
 use crate::opponent;
@@ -44,6 +44,9 @@ pub struct TrainingSession {
     /// drive loop reads it every tick and rebuilds its opponent when it
     /// changes.
     opponent_kind: Arc<AtomicU8>,
+    /// What the opponent saw on its latest tick; see
+    /// [`opponent_view`](Self::opponent_view).
+    opponent_seen: Arc<Mutex<Option<BattleObs>>>,
     pacing: Pacing,
     /// The controlled core's screen, and the non-controlled core's as
     /// the picture-in-picture while that is on.
@@ -117,6 +120,7 @@ impl TrainingSession {
         let controlled = Arc::new(AtomicUsize::new(0));
         let joyflags = Arc::new(AtomicU32::new(0));
         let opponent_kind = Arc::new(AtomicU8::new(opponent::Kind::default() as u8));
+        let opponent_seen = Arc::new(Mutex::new(None));
         let pacing = Pacing::new(game);
         // A primed pair, same as netplay — the dummy seat is the pair's
         // other console, not a solo boot.
@@ -138,6 +142,7 @@ impl TrainingSession {
             controlled: controlled.clone(),
             joyflags: joyflags.clone(),
             opponent_kind: opponent_kind.clone(),
+            opponent_seen: opponent_seen.clone(),
             seen_kind: opponent::Kind::default(),
             opponent: opponent::Kind::default().build(rng_seed),
             // The battle's own seed doubles as the CPU's: a session is
@@ -159,6 +164,7 @@ impl TrainingSession {
                 controlled,
                 joyflags,
                 opponent_kind,
+                opponent_seen,
                 pacing,
                 surfaces,
                 ended,
@@ -192,6 +198,13 @@ impl TrainingSession {
     /// next tick; the new opponent starts fresh, holding nothing.
     pub fn set_opponent_kind(&self, kind: opponent::Kind) {
         self.opponent_kind.store(kind as u8, Ordering::Relaxed);
+    }
+
+    /// Exactly what the opponent saw on its latest tick: the battle
+    /// reading with only its own core's detail. `None` outside a live
+    /// round. For a debug overlay of what a CPU is reacting to.
+    pub fn opponent_view(&self) -> Option<BattleObs> {
+        self.opponent_seen.lock().unwrap().clone()
     }
 
     /// Turn the auxiliary opponent surface on or off. The host presents
@@ -255,6 +268,7 @@ pub struct Driver {
     controlled: Arc<AtomicUsize>,
     joyflags: Arc<AtomicU32>,
     opponent_kind: Arc<AtomicU8>,
+    opponent_seen: Arc<Mutex<Option<BattleObs>>>,
     /// The `opponent_kind` the drive loop last acted on. Only a change
     /// rebuilds the opponent, so one installed directly
     /// ([`set_opponent`](Driver::set_opponent)) stays until the host
@@ -321,11 +335,19 @@ impl Driver {
                 self.seen_kind = kind;
                 self.opponent = kind.build(self.opponent_seed);
             }
+            // Only the opponent's own core's detail: the other one is the
+            // player's, and may hold the player's hand.
+            let seen = self.last_battle.as_ref().map(|b| {
+                let mut b = b.clone();
+                b.detail[1 - dummy_player] = None;
+                b
+            });
             let dummy = self.opponent.input(&opponent::View {
                 seat: dummy_player,
-                battle: self.last_battle.as_ref(),
+                battle: seen.as_ref(),
                 events: &self.last_events,
             });
+            *self.opponent_seen.lock().unwrap() = seen;
 
             // Route each input to its core, then feed the engine: core 0
             // via `advance`, core 1 via `add_remote_input` (the engine's
@@ -367,7 +389,7 @@ impl Driver {
             // sample is this tick's. None at all means no live round to
             // read this tick (the store stops sampling once a round is
             // decided) — the opponent sees that as "no battle".
-            self.last_battle = samples.last().map(|&(_, obs)| obs);
+            self.last_battle = samples.into_iter().next_back().map(|(_, obs)| obs);
             self.last_events = events;
 
             // Publish the controlled core to the main screen; the other

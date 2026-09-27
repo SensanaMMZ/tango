@@ -25,6 +25,9 @@ pub struct View<'a> {
     pub seat: usize,
     /// The latest confirmed battle reading, or `None` while there's no
     /// live, undecided round to read (intros, result screens, menus).
+    /// Its `detail` holds only `detail[seat]`, this seat's own core's
+    /// game-specific readings; the other side's is removed before an
+    /// opponent sees it, since it may carry that player's hand.
     pub battle: Option<&'a BattleObs>,
     /// Events confirmed by the tick that just ran, tick-stamped.
     pub events: &'a [(u32, Event)],
@@ -211,6 +214,7 @@ mod tests {
         BattleObs {
             units: [unit, UnitObs { tile: (5, 2), ..unit }],
             custom: [false, custom],
+            detail: [None, None],
         }
     }
 

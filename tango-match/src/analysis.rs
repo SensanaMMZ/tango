@@ -553,11 +553,11 @@ pub fn fold_confirmed(
 
     let mut samples = samples.into_iter().peekable();
     for (etick, event) in events {
-        while let Some(&(tick, obs)) = samples.peek() {
+        while let Some(&(tick, _)) = samples.peek() {
             if tick >= etick {
                 break;
             }
-            samples.next();
+            let (_, obs) = samples.next().expect("peeked");
             push(builder, tick, obs);
         }
         match event {
@@ -606,6 +606,7 @@ mod tests {
         crate::telemetry::BattleObs {
             units: [UnitObs { hp: p0, tile: (1, 2) }, UnitObs { hp: p1, tile: (4, 2) }],
             custom: [custom, custom],
+            detail: [None, None],
         }
     }
 
