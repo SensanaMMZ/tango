@@ -506,6 +506,10 @@ impl tango_backend_mgba::GameSupport for Pvp {
                     custom_self,
                 })
             }
+
+            fn detail(&self, core: &mut mgba::core::Core) -> Option<tango_match::telemetry::Detail> {
+                Some(std::sync::Arc::new(read_observation(self.ewram, core, self.player)?))
+            }
         }
         Box::new(Poller {
             ewram: &self.offsets.ewram,
@@ -513,6 +517,104 @@ impl tango_backend_mgba::GameSupport for Pvp {
             chips: Default::default(),
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// The CPU opponent's view.
+
+/// Probe-only: the battle RAM window `bn6_explore` snapshots, covering
+/// every address the observation reads except the unit records' tail.
+#[cfg(feature = "ram-probe")]
+const RAW_PROBE: std::ops::Range<u32> = 0x0203_4000..0x0203_e000;
+
+/// Read one core's [`Bn6Obs`](crate::observe::Bn6Obs): `player`'s own
+/// chip-select state and queue, and both players' visible state. `None`
+/// outside a battle with two live units.
+fn read_observation(
+    ewram: &EWRAMOffsets,
+    core: &mut mgba::core::Core,
+    player: usize,
+) -> Option<crate::observe::Bn6Obs> {
+    use crate::observe::{Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, UnitDetail};
+
+    // The charge and form tables are laid out per unit slot, like the
+    // unit records; each slot's owner says which player it is.
+    let mut units = [None, None];
+    for slot in 0..2u32 {
+        let owner = read_unit(ewram, core, slot).owner as usize;
+        let charge_base = ewram.charge + slot * 0x100;
+        let charge = match core.raw_read_8(charge_base + 0x9d, -1) {
+            0 => Charge::None,
+            1 => Charge::Charging(core.raw_read_8(charge_base + 0x9b, -1)),
+            _ => Charge::Full,
+        };
+        let form = Form::from_raw(core.raw_read_8(ewram.form + slot * 0x10, -1));
+        *units.get_mut(owner)? = Some((form, charge));
+    }
+    let units = [0, 1].map(|p: usize| {
+        units[p].map(|(form, charge)| UnitDetail {
+            form,
+            beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
+            charge,
+        })
+    });
+    let units = [units[0]?, units[1]?];
+
+    let chip_select = (core.raw_read_8(ewram.chip_select_open, -1) == 0xff).then(|| {
+        let raw_cursor = core.raw_read_8(ewram.chip_select_cursor, -1);
+        let cursor = match core.raw_read_8(ewram.chip_select_cursor - 5, -1) {
+            1 => Cursor::CrossBar,
+            4 => Cursor::CrossList,
+            _ => match raw_cursor {
+                0..=7 => Cursor::Hand(raw_cursor),
+                Cursor::OK => Cursor::Ok,
+                Cursor::BEAST_OUT => Cursor::BeastOut,
+                other => Cursor::Other(other),
+            },
+        };
+        let mut hand = [None; 8];
+        for (i, slot) in hand.iter_mut().enumerate() {
+            *slot = HandChip::from_raw(core.raw_read_16(ewram.hand + i as u32 * 2, -1));
+        }
+        let count = core.raw_read_8(ewram.chip_select_cursor + 1, -1).min(5);
+        let picked = (0..count as u32)
+            .map(|i| core.raw_read_8(ewram.picked_slots + i, -1))
+            .collect();
+        let form_picked = match core.raw_read_8(ewram.form_picked, -1) {
+            1 => Some(FormPick::Cross),
+            2 => Some(FormPick::BeastOut),
+            _ => None,
+        };
+        ChipSelect {
+            cursor,
+            hand,
+            picked,
+            form_picked,
+        }
+    });
+
+    // This player's own selected-chip block: the ids from the next
+    // unfired one on (see `chip_blocks`).
+    let block = ewram.chip_blocks + player as u32 * 0x50;
+    let fired = core.raw_read_16(block, -1) as u32;
+    let queue = (fired..6)
+        .map(|i| core.raw_read_16(block + 2 + i * 2, -1))
+        .take_while(|&id| id != 0xffff && id != 0)
+        .collect();
+
+    Some(Bn6Obs {
+        player,
+        custom_gauge: core.raw_read_8(ewram.custom_gauge, -1),
+        chip_select,
+        queue,
+        units,
+        #[cfg(feature = "ram-probe")]
+        raw: std::env::var_os("TANGO_BN6_RAWDUMP").map(|_| {
+            let mut bytes = vec![0u8; RAW_PROBE.len()];
+            core.raw_read_range(RAW_PROBE.start, -1, &mut bytes);
+            bytes
+        }),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +736,40 @@ struct EWRAMOffsets {
     /// couldn't show duplicate picks fired back-to-back — the fired
     /// counter can. Derived empirically from the golden replays.
     chip_blocks: u32,
+
+    // The CPU opponent's reads (`read_observation`). Each was found by
+    // diffing RAM snapshots with the `bn6_explore` example and checked
+    // against screenshots, on BR5E in a one-round training battle. The
+    // per-slot tables assume the unit slots' layout; slots swap owners
+    // between rounds, which a best-of-3 still has to confirm for these.
+    /// Per unit slot, `0x100` apart: `+0x9b` u8 ticks B has been held
+    /// (caps at 90), `+0x9d` u8 charge level (0 none, 1 charging, 2
+    /// full). Found holding B and watching both climb.
+    charge: u32,
+    /// Per unit slot, `0x10` apart: the form byte ([`Form::from_raw`]).
+    /// Found crossing each side into a different Cross, then Beast Out
+    /// in both orders (Heat then Beast read 13, Beast then Elec 14).
+    ///
+    /// [`Form::from_raw`]: crate::observe::Form::from_raw
+    form: u32,
+    /// Per player, one byte each: Beast Out turns left, 3 → 2 → 1 as
+    /// each Beast Out turn is spent (matches the counter by the HUD face).
+    beast_turns: u32,
+    /// The custom gauge, 0 → 64 (full) as it fills after a chip select.
+    custom_gauge: u32,
+    /// `0xff` while this core's chip screen is open, `0` otherwise.
+    chip_select_open: u32,
+    /// The chip-screen cursor: hand slots 0-7, OK 10, ★ (Beast Out) 11.
+    /// `+1` is the pick count (★ included); `-5` is 1 on the Cross bar
+    /// and 4 in the open Cross list.
+    chip_select_cursor: u32,
+    /// The picks so far, as cursor positions, one byte each.
+    picked_slots: u32,
+    /// The form picked this chip select: 1 Cross, 2 Beast Out.
+    form_picked: u32,
+    /// The hand: 8 × u16 `(code << 9) | id`, `0xffff` once picked. Read
+    /// against the screen (Vulcan1 * = `0x3405`).
+    hand: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -793,6 +929,15 @@ static EWRAM_OFFSETS: EWRAMOffsets = EWRAMOffsets {
     rng2_state:             0x020013f0,
     unit:                   0x0203a9b0,
     chip_blocks:            0x020349c0,
+    charge:                 0x02034000,
+    form:                   0x0203a980,
+    beast_turns:            0x0203528d,
+    custom_gauge:           0x020352a1,
+    chip_select_open:       0x02035288,
+    chip_select_cursor:     0x020364c7,
+    picked_slots:           0x02036508,
+    form_picked:            0x0203664b,
+    hand:                   0x0203cdb0,
 };
 
 #[derive(Clone, Copy)]

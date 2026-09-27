@@ -26,6 +26,9 @@ tango-gamesupport-bn6-ui = { path = "../tango-gamesupport-bn6-ui", optional = tr
 
 [features]
 ui = ["tango-gamesupport/ui", "dep:tango-gamesupport-bn6-ui"]
+# Adds the raw battle RAM to each observation when TANGO_BN6_RAWDUMP is set,
+# for finding addresses with tango-session's bn6_explore example.
+ram-probe = []
 
 [lints]
 workspace = true

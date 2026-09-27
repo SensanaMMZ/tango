@@ -28,10 +28,12 @@ tokio-util = { workspace = true, features = ["rt"] }
 web-time.workspace = true
 
 [dev-dependencies]
-# The custom_probe example boots a real BN6 battle from the Legacy
-# Collection; nothing in the library itself depends on either.
-tango-gamesupport-bn6 = { path = "../tango-gamesupport-bn6" }
+# The custom_probe and bn6_explore examples boot a real BN6 battle from
+# the Legacy Collection; nothing in the library itself depends on these.
+tango-gamesupport-bn6 = { path = "../tango-gamesupport-bn6", features = ["ram-probe"] }
 tango-library = { path = "../tango-library", features = ["native", "gamesupport-bn6"] }
+# bn6_explore's screenshots.
+image = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true

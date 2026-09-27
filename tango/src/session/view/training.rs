@@ -24,11 +24,45 @@ pub(crate) fn view<'a>(s: &'a TrainingSession, ctx: Ctx<'a>) -> Element<'a, Sess
             stacked = stacked.push(o);
         }
     }
+    // What the CPU is reacting to — outside the controls gate, so it
+    // stays up while the battle runs.
+    if let Some(o) = cpu_overlay(s) {
+        stacked = stacked.push(o);
+    }
     if state.controls_anim.visible(now) {
         stacked = stacked.push(bottom_bar(lang, s, state, ctx.opponent_view));
         stacked = stacked.push(corner_commands_overlay(lang, state, SessionMessage::Close, false));
     }
     finish_session_stack(lang, state, stacked)
+}
+
+/// A debug readout of exactly what the CPU opponent was handed on its
+/// latest tick, top-left over the game: HP, whose custom screen is open,
+/// and the game's own summary of its detail (for BN6: forms, Beast Out
+/// turns, charge, gauge, and the CPU's own hand while it picks). Shown
+/// only while a CPU drives the other side.
+fn cpu_overlay<'a>(s: &TrainingSession) -> Option<Element<'a, SessionMessage>> {
+    if s.opponent_kind() == tango_session::opponent::Kind::Dummy {
+        return None;
+    }
+    let obs = s.opponent_view()?;
+    let mut lines = vec![format!(
+        "CPU sees · HP {} / {} · custom {:?}",
+        obs.units[0].hp, obs.units[1].hp, obs.custom
+    )];
+    lines.extend(obs.detail.iter().flatten().map(|d| d.summary()));
+    let plate = container(text(lines.join("\n")).size(11).font(iced::Font::MONOSPACE))
+        .padding([6, 8])
+        .style(hud_chip_plate);
+    Some(
+        container(plate)
+            .width(Fill)
+            .height(Fill)
+            .padding(8)
+            .align_x(iced::alignment::Horizontal::Left)
+            .align_y(iced::alignment::Vertical::Top)
+            .into(),
+    )
 }
 
 /// One 32×32 icon toggle, lit (primary text + hairline) while `active` —

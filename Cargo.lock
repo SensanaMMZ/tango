@@ -8196,6 +8196,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "chrono",
+ "image",
  "log",
  "num-traits",
  "rand 0.8.5",

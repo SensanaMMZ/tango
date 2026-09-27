@@ -2,6 +2,7 @@ pub use tango_gamesupport_bn6_dataview as dataview;
 #[cfg(feature = "ui")]
 pub use tango_gamesupport_bn6_ui as ui;
 
+pub mod observe;
 pub mod pvp;
 
 use std::sync::LazyLock;
