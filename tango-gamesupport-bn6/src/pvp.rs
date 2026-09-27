@@ -522,10 +522,13 @@ impl tango_backend_mgba::GameSupport for Pvp {
 // ---------------------------------------------------------------------------
 // The CPU opponent's view.
 
-/// Probe-only: the battle RAM window `bn6_explore` snapshots, covering
-/// every address the observation reads except the unit records' tail.
+/// Probe-only: the RAM `bn6_explore` snapshots: all of EWRAM.
 #[cfg(feature = "ram-probe")]
-const RAW_PROBE: std::ops::Range<u32> = 0x0203_4000..0x0203_e000;
+const RAW_PROBE: std::ops::Range<u32> = 0x0200_0000..0x0204_0000;
+
+/// How many obstacle records `read_observation` scans. Five were the
+/// most seen live at once in the lab; the rest is headroom.
+const OBSTACLE_SLOTS: u32 = 8;
 
 /// Read one core's [`Bn6Obs`](crate::observe::Bn6Obs): `player`'s own
 /// chip-select state and queue, and both players' visible state. `None`
@@ -535,7 +538,10 @@ fn read_observation(
     core: &mut mgba::core::Core,
     player: usize,
 ) -> Option<crate::observe::Bn6Obs> {
-    use crate::observe::{Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, UnitDetail};
+    use crate::observe::{
+        Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, Obstacle, ObstacleKind, Panel, PanelKind,
+        UnitDetail,
+    };
 
     // The charge and form tables are laid out per unit slot, like the
     // unit records; each slot's owner says which player it is.
@@ -602,12 +608,41 @@ fn read_observation(
         .take_while(|&id| id != 0xffff && id != 0)
         .collect();
 
+    let panels = [0u32, 1, 2].map(|y| {
+        [0u32, 1, 2, 3, 4, 5].map(|x| {
+            let a = ewram.panels + y * 0x100 + x * 0x20;
+            Panel {
+                kind: PanelKind::from_raw(core.raw_read_8(a, -1)),
+                owner: core.raw_read_8(a + 1, -1),
+            }
+        })
+    });
+    let obstacles = (0..OBSTACLE_SLOTS)
+        .filter_map(|i| {
+            let a = ewram.obstacles + i * 0xd8;
+            let kind = core.raw_read_8(a + 0x18, -1);
+            let max_hp = core.raw_read_16(a + 0x16, -1);
+            // A freed slot keeps its tile but clears its kind and HP; a
+            // destroyed object keeps its kind at 0 HP until the slot is
+            // reused.
+            let hp = core.raw_read_16(a + 0x14, -1);
+            (kind != 0 && max_hp != 0 && hp != 0).then(|| Obstacle {
+                kind: ObstacleKind::from_raw(kind),
+                tile: (core.raw_read_8(a + 2, -1), core.raw_read_8(a + 3, -1)),
+                hp,
+                max_hp,
+            })
+        })
+        .collect();
+
     Some(Bn6Obs {
         player,
         custom_gauge: core.raw_read_8(ewram.custom_gauge, -1),
         chip_select,
         queue,
         units,
+        panels,
+        obstacles,
         #[cfg(feature = "ram-probe")]
         raw: std::env::var_os("TANGO_BN6_RAWDUMP").map(|_| {
             let mut bytes = vec![0u8; RAW_PROBE.len()];
@@ -770,6 +805,15 @@ struct EWRAMOffsets {
     /// The hand: 8 × u16 `(code << 9) | id`, `0xffff` once picked. Read
     /// against the screen (Vulcan1 * = `0x3405`).
     hand: u32,
+    /// The field: tile `(x, y)`'s panel kind at `+ (y - 1) * 0x100 +
+    /// (x - 1) * 0x20`, its owner in the byte after. Mapped by using each
+    /// panel chip (CrakShot, the seeds, Snctuary, Geddon, the roads).
+    panels: u32,
+    /// Obstacle records, `0xd8` apart: `+2` tile x, `+3` tile y, `+0x14`
+    /// HP, `+0x16` max HP, `+0x18` kind. Found by spawning each object on
+    /// a fresh tile; HP matched each chip's (RockCube 200, Fan 40, music
+    /// boxes 60).
+    obstacles: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -938,6 +982,8 @@ static EWRAM_OFFSETS: EWRAMOffsets = EWRAMOffsets {
     picked_slots:           0x02036508,
     form_picked:            0x0203664b,
     hand:                   0x0203cdb0,
+    panels:                 0x02039c06,
+    obstacles:              0x0203cff0,
 };
 
 #[derive(Clone, Copy)]

@@ -30,6 +30,14 @@ pub struct Bn6Obs {
     pub queue: Vec<u16>,
     /// Both players' visible state, by absolute player.
     pub units: [UnitDetail; 2],
+    /// The field, `panels[y][x]` for tile `(x + 1, y + 1)`: rows top to
+    /// bottom, columns left to right (columns 1-3 are player 0's side at
+    /// the start of a battle).
+    pub panels: [[Panel; 6]; 3],
+    /// Obstacles still standing (HP left), the stage's own included:
+    /// RockCube, music boxes, Guardian, bombs... Objects can be placed in
+    /// either area, so the panel under one doesn't say who placed it.
+    pub obstacles: Vec<Obstacle>,
     /// Probe-only: the raw battle RAM the fields above are read from.
     #[cfg(feature = "ram-probe")]
     pub raw: Option<Vec<u8>>,
@@ -90,6 +98,102 @@ impl HandChip {
             id: raw & 0x1ff,
             code: (raw >> 9) as u8,
         })
+    }
+}
+
+/// One panel of the field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Panel {
+    pub kind: PanelKind,
+    /// The player whose area it is (changes when an area is stolen).
+    pub owner: u8,
+}
+
+/// A panel's surface. Values found by using each chip in the
+/// `bn6_explore` lab and checking screenshots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PanelKind {
+    /// A hole: nothing can stand here until it repairs.
+    Broken,
+    Normal,
+    /// Breaks into a hole once stepped off.
+    Cracked,
+    Poison,
+    Holy,
+    Grass,
+    Ice,
+    /// Conveyor panels from GoingRd / ComingRd. Which way each pushes is
+    /// still to be checked; the names follow the chip that made them.
+    GoingRoad,
+    ComingRoad,
+    /// Not yet mapped (volcano and others).
+    Unknown(u8),
+}
+
+impl PanelKind {
+    pub fn from_raw(raw: u8) -> Self {
+        match raw {
+            0x01 => PanelKind::Broken,
+            0x02 => PanelKind::Normal,
+            0x03 => PanelKind::Cracked,
+            0x04 => PanelKind::Poison,
+            0x05 => PanelKind::Holy,
+            0x06 => PanelKind::Grass,
+            0x07 => PanelKind::Ice,
+            0x0b => PanelKind::GoingRoad,
+            0x0c => PanelKind::ComingRoad,
+            other => PanelKind::Unknown(other),
+        }
+    }
+}
+
+/// An obstacle on the field.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Obstacle {
+    pub kind: ObstacleKind,
+    pub tile: (u8, u8),
+    pub hp: u16,
+    pub max_hp: u16,
+}
+
+/// What an obstacle is. The game's own kind byte; mapped from the
+/// `bn6_explore` lab (LilBolr1 and Fanfare still unseen; the objects
+/// AirSpin3 and AirRaid3 leave are unconfirmed).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObstacleKind {
+    RockCube,
+    /// The cube some stages start with.
+    StageCube,
+    Fan,
+    Discord,
+    Timpani,
+    Silence,
+    Guardian,
+    Sensor,
+    BlackBomb,
+    TimeBomb,
+    Mine,
+    VDoll,
+    Unknown(u8),
+}
+
+impl ObstacleKind {
+    pub fn from_raw(raw: u8) -> Self {
+        match raw {
+            0xd0 => ObstacleKind::RockCube,
+            0xd1 => ObstacleKind::StageCube,
+            0xd5 => ObstacleKind::BlackBomb,
+            0xd7 => ObstacleKind::Fan,
+            0xd8 => ObstacleKind::TimeBomb,
+            0xda => ObstacleKind::Mine,
+            0xde => ObstacleKind::Discord,
+            0xdf => ObstacleKind::Timpani,
+            0xe0 => ObstacleKind::Silence,
+            0xe2 => ObstacleKind::VDoll,
+            0xe3 => ObstacleKind::Guardian,
+            0xe4 => ObstacleKind::Sensor,
+            other => ObstacleKind::Unknown(other),
+        }
     }
 }
 
@@ -169,6 +273,30 @@ impl tango_match::telemetry::GameDetail for Bn6Obs {
                 u.charge
             ));
         }
+        let mark = |p: &Panel| match p.kind {
+            PanelKind::Broken => 'x',
+            PanelKind::Normal => '.',
+            PanelKind::Cracked => '%',
+            PanelKind::Poison => 'P',
+            PanelKind::Holy => 'H',
+            PanelKind::Grass => 'G',
+            PanelKind::Ice => 'I',
+            PanelKind::GoingRoad => '>',
+            PanelKind::ComingRoad => '<',
+            PanelKind::Unknown(_) => '?',
+        };
+        for row in &self.panels {
+            let (a, b): (String, String) = (row[..3].iter().map(mark).collect(), row[3..].iter().map(mark).collect());
+            lines.push(format!("field {a}|{b}"));
+        }
+        if !self.obstacles.is_empty() {
+            let o: Vec<String> = self
+                .obstacles
+                .iter()
+                .map(|o| format!("{:?}@{:?} {}/{}", o.kind, o.tile, o.hp, o.max_hp))
+                .collect();
+            lines.push(format!("objects {}", o.join(", ")));
+        }
         if let Some(cs) = &self.chip_select {
             let form = match cs.form_picked {
                 Some(FormPick::Cross) => " · Cross picked",
@@ -230,6 +358,15 @@ mod tests {
         // Vulcan1 *, the first chip of the template save's opening hand.
         assert_eq!(HandChip::from_raw(0x3405), Some(HandChip { id: 5, code: 26 }));
         assert_eq!(HandChip::from_raw(0xffff), None);
+    }
+
+    #[test]
+    fn panels_and_obstacles_decode_as_seen_in_ram() {
+        assert_eq!(PanelKind::from_raw(0x07), PanelKind::Ice);
+        assert_eq!(PanelKind::from_raw(0x0b), PanelKind::GoingRoad);
+        assert_eq!(PanelKind::from_raw(0x42), PanelKind::Unknown(0x42));
+        assert_eq!(ObstacleKind::from_raw(0xd0), ObstacleKind::RockCube);
+        assert_eq!(ObstacleKind::from_raw(0x99), ObstacleKind::Unknown(0x99));
     }
 
     #[test]

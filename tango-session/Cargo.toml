@@ -31,6 +31,7 @@ web-time.workspace = true
 # The custom_probe and bn6_explore examples boot a real BN6 battle from
 # the Legacy Collection; nothing in the library itself depends on these.
 tango-gamesupport-bn6 = { path = "../tango-gamesupport-bn6", features = ["ram-probe"] }
+tango-gamesupport-common-dataview = { path = "../tango-gamesupport-common-dataview" }
 tango-library = { path = "../tango-library", features = ["native", "gamesupport-bn6"] }
 # bn6_explore's screenshots.
 image = { workspace = true, features = ["png"] }
