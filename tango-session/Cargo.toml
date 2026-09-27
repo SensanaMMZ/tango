@@ -27,6 +27,11 @@ tokio-util = { workspace = true, features = ["rt"] }
 # by `performance.now()` there and by std everywhere else.
 web-time.workspace = true
 
+[dev-dependencies]
+# The custom_probe example boots a real BN6 battle from the Legacy
+# Collection; nothing in the library itself depends on either.
+tango-gamesupport-bn6 = { path = "../tango-gamesupport-bn6" }
+tango-library = { path = "../tango-library", features = ["native", "gamesupport-bn6"] }
 
 [lints]
 workspace = true

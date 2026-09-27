@@ -97,6 +97,12 @@ fn bottom_bar<'a>(
             t!(lang, "training-swap"),
             Message::ToggleSwap
         ),
+        toggle_button(
+            Icon::Bot,
+            s.opponent_kind() != tango_session::opponent::Kind::Dummy,
+            t!(lang, "training-cpu"),
+            Message::ToggleCpu
+        ),
     ]
     .spacing(8)
     .align_y(Alignment::Center);

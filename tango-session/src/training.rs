@@ -6,8 +6,11 @@
 //! locally before the tick advances. Both cores run the player's own ROM + save
 //! (a mirror match), primed all the way into their link battle exactly
 //! as a netplay match would be — so training *starts in a battle*, not
-//! at the title screen. The player drives one core; the dummy on the
-//! other presses nothing, so the opponent just stands there.
+//! at the title screen. The player drives one core; an
+//! [`Opponent`](crate::opponent::Opponent) drives the other — by default
+//! the dummy, which presses nothing, so the opponent just stands there.
+//! The host can swap in a CPU mid-session
+//! ([`set_opponent_kind`](TrainingSession::set_opponent_kind)).
 //!
 //! The battle runs entirely off in-memory SRAM, so nothing a training
 //! session does is written back to the player's `.sav` on disk. There is
@@ -15,12 +18,13 @@
 //! each tick is supplied locally before that tick advances, so the pair
 //! runs in perfect lockstep.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::local::{Pacing, Surfaces};
+use crate::opponent;
 
-use tango_match::telemetry::Event;
+use tango_match::telemetry::{BattleObs, Event};
 
 /// Single battle. Training always fights one round against the dummy;
 /// there's no lobby to pick a mode, and the default do-nothing opponent
@@ -36,6 +40,10 @@ pub struct TrainingSession {
     /// controlled core).
     controlled: Arc<AtomicUsize>,
     joyflags: Arc<AtomicU32>,
+    /// Which [`opponent::Kind`] drives the other core, as its `u8`. The
+    /// drive loop reads it every tick and rebuilds its opponent when it
+    /// changes.
+    opponent_kind: Arc<AtomicU8>,
     pacing: Pacing,
     /// The controlled core's screen, and the non-controlled core's as
     /// the picture-in-picture while that is on.
@@ -108,6 +116,7 @@ impl TrainingSession {
 
         let controlled = Arc::new(AtomicUsize::new(0));
         let joyflags = Arc::new(AtomicU32::new(0));
+        let opponent_kind = Arc::new(AtomicU8::new(opponent::Kind::default() as u8));
         let pacing = Pacing::new(game);
         // A primed pair, same as netplay — the dummy seat is the pair's
         // other console, not a solo boot.
@@ -128,6 +137,15 @@ impl TrainingSession {
             match_,
             controlled: controlled.clone(),
             joyflags: joyflags.clone(),
+            opponent_kind: opponent_kind.clone(),
+            seen_kind: opponent::Kind::default(),
+            opponent: opponent::Kind::default().build(rng_seed),
+            // The battle's own seed doubles as the CPU's: a session is
+            // reproducible from one value, and nothing the CPU draws
+            // touches the game's RNG.
+            opponent_seed: rng_seed,
+            last_battle: None,
+            last_events: Vec::new(),
             pacing: pacing.clone(),
             surfaces: surfaces.clone(),
             ended: ended.clone(),
@@ -140,6 +158,7 @@ impl TrainingSession {
                 game,
                 controlled,
                 joyflags,
+                opponent_kind,
                 pacing,
                 surfaces,
                 ended,
@@ -162,6 +181,17 @@ impl TrainingSession {
     /// and the audio + main screen follow the newly-controlled core.
     pub fn toggle_swap(&self) {
         self.controlled.fetch_xor(1, Ordering::Relaxed);
+    }
+
+    /// Who drives the side the player doesn't.
+    pub fn opponent_kind(&self) -> opponent::Kind {
+        opponent::Kind::from_u8(self.opponent_kind.load(Ordering::Relaxed))
+    }
+
+    /// Hand the other side to a different opponent. Takes effect on the
+    /// next tick; the new opponent starts fresh, holding nothing.
+    pub fn set_opponent_kind(&self, kind: opponent::Kind) {
+        self.opponent_kind.store(kind as u8, Ordering::Relaxed);
     }
 
     /// Turn the auxiliary opponent surface on or off. The host presents
@@ -224,6 +254,19 @@ pub struct Driver {
     match_: tango_match::Match,
     controlled: Arc<AtomicUsize>,
     joyflags: Arc<AtomicU32>,
+    opponent_kind: Arc<AtomicU8>,
+    /// The `opponent_kind` the drive loop last acted on. Only a change
+    /// rebuilds the opponent, so one installed directly
+    /// ([`set_opponent`](Driver::set_opponent)) stays until the host
+    /// picks a kind.
+    seen_kind: opponent::Kind,
+    /// The opponent driving the other core.
+    opponent: Box<dyn opponent::Opponent>,
+    opponent_seed: [u8; 16],
+    /// What the opponent sees: the newest confirmed battle reading
+    /// (`None` outside a live round) and the events that came with it.
+    last_battle: Option<BattleObs>,
+    last_events: Vec<(u32, Event)>,
     pacing: Pacing,
     surfaces: Surfaces,
     ended: Arc<AtomicBool>,
@@ -244,6 +287,14 @@ impl crate::Drive for Driver {
 }
 
 impl Driver {
+    /// Install `opponent` on the other core from the next tick, in place
+    /// of whatever [`Kind`](opponent::Kind) built — for a host (or a
+    /// test harness) with an opponent of its own. Picking a kind later
+    /// replaces it.
+    pub fn set_opponent(&mut self, opponent: Box<dyn opponent::Opponent>) {
+        self.opponent = opponent;
+    }
+
     /// Advance the battle one tick: route both inputs, step the pair,
     /// publish the screens. `false` once the session has
     /// ended — the battle's own match-end path, a failed advance, or the
@@ -262,8 +313,19 @@ impl Driver {
             // tail never plays under the new one.
             self.match_.listen_to(controlled);
 
-            // The dummy presses nothing.
-            let dummy = 0;
+            // The opponent picks its input from the last tick's
+            // readings. A kind change swaps in a fresh opponent here, on
+            // the drive thread, so none is ever touched mid-decision.
+            let kind = opponent::Kind::from_u8(self.opponent_kind.load(Ordering::Relaxed));
+            if kind != self.seen_kind {
+                self.seen_kind = kind;
+                self.opponent = kind.build(self.opponent_seed);
+            }
+            let dummy = self.opponent.input(&opponent::View {
+                seat: dummy_player,
+                battle: self.last_battle.as_ref(),
+                events: &self.last_events,
+            });
 
             // Route each input to its core, then feed the engine: core 0
             // via `advance`, core 1 via `add_remote_input` (the engine's
@@ -292,7 +354,7 @@ impl Driver {
             // Training has no replay sink, but the returned batch length is the
             // telemetry boundary for this advance. The rows then drop here.
             self.confirmed_through += advanced.confirmed_inputs.len() as u32;
-            let (_samples, events) = match self.match_.telemetry() {
+            let (samples, events) = match self.match_.telemetry() {
                 Some(store) => store.lock().unwrap().take_through(self.confirmed_through),
                 None => (Vec::new(), Vec::new()),
             };
@@ -301,6 +363,12 @@ impl Driver {
                 self.surfaces.wake.notify_one();
                 return false;
             }
+            // Lockstep confirms every tick as it runs, so the newest
+            // sample is this tick's. None at all means no live round to
+            // read this tick (the store stops sampling once a round is
+            // decided) — the opponent sees that as "no battle".
+            self.last_battle = samples.last().map(|&(_, obs)| obs);
+            self.last_events = events;
 
             // Publish the controlled core to the main screen; the other
             // core feeds the PiP while it's on.

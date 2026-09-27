@@ -14,6 +14,8 @@ pub enum Message {
     SetOpponentView(crate::config::OpponentView),
     /// Swap which side (core) the player controls.
     ToggleSwap,
+    /// Hand the other side to the CPU, or back to the do-nothing dummy.
+    ToggleCpu,
     /// Pin the floating bar while the opponent-view dropdown is open.
     BarMenuToggled(bool),
 }
@@ -30,6 +32,15 @@ pub(crate) fn update(state: &mut State, msg: Message) -> Option<Effect> {
         Message::ToggleSwap => {
             if let Some(s) = state.active_as::<TrainingSession>() {
                 s.toggle_swap();
+            }
+        }
+        Message::ToggleCpu => {
+            if let Some(s) = state.active_as::<TrainingSession>() {
+                use tango_session::opponent::Kind;
+                s.set_opponent_kind(match s.opponent_kind() {
+                    Kind::Dummy => Kind::Random,
+                    Kind::Random => Kind::Dummy,
+                });
             }
         }
         Message::BarMenuToggled(open) => state.bar_menu_open = open,

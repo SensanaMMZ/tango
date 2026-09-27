@@ -74,6 +74,7 @@ opponent-view-picture-in-picture = Picture-in-picture
 opponent-view-stack-horizontally = Stack horizontally
 opponent-view-stack-vertically = Stack vertically
 training-swap = Switch sides
+training-cpu = CPU opponent
 play-fight = Fight
 play-cancel = Leave
 play-status-idle = Enter a link code to start netplay, or leave blank for single-player.

@@ -26,6 +26,8 @@
 
 // The session kinds. Each hands a host a [`Drive`] and publishes what
 // the host shows; nothing here spawns or sleeps.
+/// Who drives training's other seat: the do-nothing dummy or a CPU.
+pub mod opponent;
 /// Live netplay, on the transport below.
 ///
 /// Builds for wasm32: the transport rides a facade that is the
