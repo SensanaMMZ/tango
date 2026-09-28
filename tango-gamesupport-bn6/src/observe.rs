@@ -228,8 +228,47 @@ pub struct UnitDetail {
     pub status: Status,
     /// The emotion meter, raw (`NaviStats.Mood`): 128 at rest, falling as
     /// this player takes hits without hitting back. `None` for the other
-    /// player (the meter doesn't show; Anger has its own status flag).
+    /// player (the meter doesn't show; the emotion it leads to does).
     pub mood: Option<u8>,
+    /// The emotion, decided the way the game's own
+    /// `possiblyGetBattleEmotion_8015B64` does (bn6f `asm/asm00_2.s`).
+    /// For the other player only Full Synchro and Anger, which show on
+    /// screen; Tired and Exhausted don't, so a bot tracks them itself from
+    /// the Beast Out (then Tired) and Beast Over (then Exhausted) it saw.
+    pub emotion: Emotion,
+}
+
+/// The battle emotion, in the game's own order of precedence.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Emotion {
+    Normal,
+    /// `AIData.Unk_32` set (0xffff until cleared); the mood meter is
+    /// frozen while it lasts.
+    FullSynchro,
+    /// The game's code 2: mood at 255. Which face this is is unconfirmed.
+    Code2,
+    /// `AIData.Anger` set.
+    Anger,
+    /// The game's code 5: `AIData.Unk_36` set, or mood at 0. Likely the
+    /// peril/exhausted face; unconfirmed.
+    Code5,
+}
+
+impl Emotion {
+    /// The game's decision, from the three `AIData` words and the mood.
+    pub fn decide(unk_36: u16, anger: u16, full_synchro: u16, mood: u8) -> Self {
+        if unk_36 != 0 || mood == 0 {
+            Emotion::Code5
+        } else if anger != 0 {
+            Emotion::Anger
+        } else if full_synchro != 0 {
+            Emotion::FullSynchro
+        } else if mood == 0xff {
+            Emotion::Code2
+        } else {
+            Emotion::Normal
+        }
+    }
 }
 
 /// A player's NaviCust effects, as the game compiled them into its
@@ -456,6 +495,9 @@ impl tango_match::telemetry::GameDetail for Bn6Obs {
             if u.invisible_ticks > 0 {
                 extra += &format!(" · invisible {}", u.invisible_ticks);
             }
+            if u.emotion != Emotion::Normal {
+                extra += &format!(" · {:?}", u.emotion);
+            }
             if let Some(mood) = u.mood.filter(|&m| m != 128) {
                 extra += &format!(" · mood {mood}");
             }
@@ -624,6 +666,16 @@ mod tests {
         let seen = Status(0x0206_0010);
         assert!(seen.super_armor());
         assert_eq!(seen.0 & !Status::NAVICUST_BITS, 0x0200_0000);
+    }
+
+    #[test]
+    fn emotion_follows_the_games_precedence() {
+        assert_eq!(Emotion::decide(0, 0, 0, 128), Emotion::Normal);
+        assert_eq!(Emotion::decide(0, 0, 0xffff, 128), Emotion::FullSynchro);
+        assert_eq!(Emotion::decide(0, 60, 0xffff, 128), Emotion::Anger);
+        assert_eq!(Emotion::decide(1, 60, 0xffff, 128), Emotion::Code5);
+        assert_eq!(Emotion::decide(0, 0, 0, 0), Emotion::Code5);
+        assert_eq!(Emotion::decide(0, 0, 0, 255), Emotion::Code2);
     }
 
     #[test]

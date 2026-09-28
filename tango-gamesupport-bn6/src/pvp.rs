@@ -539,8 +539,8 @@ fn read_observation(
     player: usize,
 ) -> Option<crate::observe::Bn6Obs> {
     use crate::observe::{
-        Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, NaviCust, Obstacle,
-        ObstacleKind, Panel, PanelKind, Status, UnitDetail,
+        Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Emotion, Form, FormPick, HandChip, NaviCust,
+        Obstacle, ObstacleKind, Panel, PanelKind, Status, UnitDetail,
     };
 
     // The charge and form tables are laid out per unit slot, like the
@@ -570,23 +570,42 @@ fn read_observation(
         });
         let invisible_ticks = core.raw_read_16(coll + 0x24, -1);
         let status = Status(core.raw_read_32(coll + 0x3c, -1));
-        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks, status));
+        // Its AI record (`BattleObject.AIDataPtr`): the emotion words.
+        let ai = core.raw_read_32(unit_field(ewram, slot, 0x58), -1);
+        if !(0x0200_0000..0x0204_0000).contains(&ai) {
+            return None;
+        }
+        let emotion_words = [0x36, 0x34, 0x32].map(|o| core.raw_read_16(ai + o, -1));
+        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks, status, emotion_words));
     }
     let units = [0, 1].map(|p: usize| {
-        units[p].map(|(form, charge, barrier, invisible_ticks, status)| UnitDetail {
-            form,
-            beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
-            charge,
-            barrier,
-            invisible_ticks,
-            // The other player: only what shows on screen.
-            status: if p == player {
-                status
-            } else {
-                Status(status.0 & !Status::NAVICUST_BITS)
+        units[p].map(
+            |(form, charge, barrier, invisible_ticks, status, [unk_36, anger, full_synchro])| {
+                let mood = core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1);
+                UnitDetail {
+                    form,
+                    beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
+                    charge,
+                    barrier,
+                    invisible_ticks,
+                    // The other player: only what shows on screen.
+                    status: if p == player {
+                        status
+                    } else {
+                        Status(status.0 & !Status::NAVICUST_BITS)
+                    },
+                    mood: (p == player).then_some(mood),
+                    // The other player's emotion only as far as it shows: Full
+                    // Synchro and Anger do; Tired and Exhausted don't (a player
+                    // infers them from the Beast Out / Beast Over they saw).
+                    emotion: match Emotion::decide(unk_36, anger, full_synchro, mood) {
+                        e @ (Emotion::FullSynchro | Emotion::Anger) => e,
+                        _ if p != player => Emotion::Normal,
+                        e => e,
+                    },
+                }
             },
-            mood: (p == player).then(|| core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1)),
-        })
+        )
     });
     let units = [units[0]?, units[1]?];
     let mut own_stats = [0u8; 0x64];
