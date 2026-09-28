@@ -539,8 +539,8 @@ fn read_observation(
     player: usize,
 ) -> Option<crate::observe::Bn6Obs> {
     use crate::observe::{
-        Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, Obstacle, ObstacleKind, Panel, PanelKind,
-        UnitDetail,
+        Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, Obstacle, ObstacleKind,
+        Panel, PanelKind, UnitDetail,
     };
 
     // The charge and form tables are laid out per unit slot, like the
@@ -555,13 +555,23 @@ fn read_observation(
             _ => Charge::Full,
         };
         let form = Form::from_raw(core.raw_read_8(ewram.form + slot * 0x10, -1));
-        *units.get_mut(owner)? = Some((form, charge));
+        let status = ewram.status + slot * 0xa8;
+        let barrier_hp = core.raw_read_8(status + 0x1e, -1);
+        let barrier = (barrier_hp != 0).then(|| Barrier {
+            kind: BarrierKind::from_raw(core.raw_read_8(status + 0x0e, -1)),
+            hp: barrier_hp,
+            threshold: core.raw_read_8(status + 0x1f, -1),
+        });
+        let invisible_ticks = core.raw_read_16(status + 0x2c, -1);
+        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks));
     }
     let units = [0, 1].map(|p: usize| {
-        units[p].map(|(form, charge)| UnitDetail {
+        units[p].map(|(form, charge, barrier, invisible_ticks)| UnitDetail {
             form,
             beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
             charge,
+            barrier,
+            invisible_ticks,
         })
     });
     let units = [units[0]?, units[1]?];
@@ -814,6 +824,11 @@ struct EWRAMOffsets {
     /// a fresh tile; HP matched each chip's (RockCube 200, Fan 40, music
     /// boxes 60).
     obstacles: u32,
+    /// Per unit slot, `0xa8` apart (the players' records in the battle
+    /// object pool): `+0x0e` barrier kind, `+0x1e` barrier HP, `+0x1f`
+    /// aura threshold, `+0x2c` u16 invisibility ticks. Found in the
+    /// `bn6_explore` duel: Barr200 read 200 and 150 after a 50-damage hit.
+    status: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -984,6 +999,7 @@ static EWRAM_OFFSETS: EWRAMOffsets = EWRAMOffsets {
     hand:                   0x0203cdb0,
     panels:                 0x02039c06,
     obstacles:              0x0203cff0,
+    status:                 0x020384e8,
 };
 
 #[derive(Clone, Copy)]

@@ -211,6 +211,46 @@ pub struct UnitDetail {
     /// Beast Out turns left (3 at the start of a battle).
     pub beast_turns_left: u8,
     pub charge: Charge,
+    /// A barrier or aura, while it has HP left.
+    pub barrier: Option<Barrier>,
+    /// Ticks of invisibility left (Invisibl), 0 when visible.
+    pub invisible_ticks: u16,
+}
+
+/// A barrier or aura on a player. Traps (the Anti- chips, ElemTrap) are
+/// deliberately not read: they're hidden from the opponent, and a bot
+/// knows its own from having set them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Barrier {
+    pub kind: BarrierKind,
+    /// HP left (a BubbleWrap reads 1; it pops on any hit and returns).
+    pub hp: u8,
+    /// For an aura, the damage an attack must reach to break it.
+    pub threshold: u8,
+}
+
+/// Which barrier; values from the `bn6_explore` duel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BarrierKind {
+    Barrier,
+    Barrier100,
+    Barrier200,
+    BubbleWrap,
+    LifeAura,
+    Unknown(u8),
+}
+
+impl BarrierKind {
+    pub fn from_raw(raw: u8) -> Self {
+        match raw {
+            0x01 => BarrierKind::Barrier,
+            0x05 => BarrierKind::Barrier100,
+            0x07 => BarrierKind::Barrier200,
+            0x08 => BarrierKind::BubbleWrap,
+            0x09 => BarrierKind::LifeAura,
+            other => BarrierKind::Unknown(other),
+        }
+    }
 }
 
 /// A player's form. Crosses are numbered by their place in the Cross
@@ -265,8 +305,15 @@ impl tango_match::telemetry::GameDetail for Bn6Obs {
         }
         for (p, u) in self.units.iter().enumerate() {
             let me = if p == self.player { " (self)" } else { "" };
+            let mut extra = String::new();
+            if let Some(b) = u.barrier {
+                extra += &format!(" · {:?} {}", b.kind, b.hp);
+            }
+            if u.invisible_ticks > 0 {
+                extra += &format!(" · invisible {}", u.invisible_ticks);
+            }
             lines.push(format!(
-                "P{}{me}: {} · beast {} left · {}",
+                "P{}{me}: {} · beast {} left · {}{extra}",
                 p + 1,
                 u.form,
                 u.beast_turns_left,

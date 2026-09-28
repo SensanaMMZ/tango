@@ -18,6 +18,7 @@
 //!   trace NAME N STEP            NAME.bin: a snapshot every STEP ticks for N ticks
 //!   obs                          print seat 1's decoded observation to log.txt
 //!   lab                          use every chip in the folder once (see `lab`)
+//!   duel                         seat 1 sets defenses, seat 0 attacks them (see `duel`)
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -107,8 +108,142 @@ impl Explorer {
     }
 
     fn obs(&self) -> Option<Bn6Obs> {
-        let s = self.shared.lock().unwrap();
-        s.dump.as_ref()?.downcast_ref::<Bn6Obs>().cloned()
+        self.obs_of(1)
+    }
+
+    /// Either seat's decoded observation (the host sees both cores).
+    fn obs_of(&self, seat: usize) -> Option<Bn6Obs> {
+        let b = self.driver.last_battle()?;
+        b.detail[seat].as_ref()?.downcast_ref::<Bn6Obs>().cloned()
+    }
+
+    /// Both cores' raw RAM.
+    fn snapshot_both(&self, name: &str) {
+        for seat in 0..2 {
+            if let Some(raw) = self.obs_of(seat).and_then(|o| o.raw) {
+                std::fs::write(self.out.join(format!("{name}-c{seat}.bin")), raw).unwrap();
+            }
+        }
+    }
+
+    /// Open the chip screen (a full gauge and L), unless it is open.
+    fn open_chip_select(&mut self) {
+        let mut waited = 0;
+        while self.obs_of(1).and_then(|o| o.chip_select).is_none() {
+            if self
+                .obs_of(1)
+                .is_some_and(|o| o.custom_gauge >= tango_gamesupport_bn6::observe::CUSTOM_GAUGE_FULL)
+            {
+                self.press(&[1], keys::L, 3);
+            } else {
+                self.run(10);
+            }
+            waited += 1;
+            assert!(waited < 400, "chip screen never opened");
+        }
+        self.run(20);
+    }
+
+    /// Pick up to five chips for `seat` whose ids satisfy `want`, in order
+    /// of preference, closed-loop on the cursor. Returns the ids picked.
+    fn pick(&mut self, seat: usize, want: &dyn Fn(u16) -> Option<u32>) -> Vec<u16> {
+        use tango_gamesupport_bn6::observe::Cursor;
+        let mut picked = vec![];
+        let mut skip = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let Some(cs) = self.obs_of(seat).and_then(|o| o.chip_select) else {
+                break;
+            };
+            let Some(target) = (0..8)
+                .filter(|&i| !cs.picked.contains(&(i as u8)) && !skip.contains(&i))
+                .filter_map(|i| Some((want(cs.hand[i]?.id)?, i)))
+                .min()
+                .map(|(_, i)| i)
+            else {
+                break;
+            };
+            let before = cs.picked.len();
+            let id = cs.hand[target].map(|c| c.id);
+            for _ in 0..20 {
+                let Some(cs) = self.obs_of(seat).and_then(|o| o.chip_select) else {
+                    break;
+                };
+                let key = match cs.cursor {
+                    Cursor::Hand(c) if c as usize == target => {
+                        self.press(&[seat], keys::A, 3);
+                        break;
+                    }
+                    Cursor::Hand(c) if (c < 5) != (target < 5) => {
+                        if target < 5 {
+                            keys::UP
+                        } else {
+                            keys::DOWN
+                        }
+                    }
+                    Cursor::Hand(c) if (c as usize) < target => keys::RIGHT,
+                    Cursor::Hand(_) => keys::LEFT,
+                    Cursor::CrossBar | Cursor::CrossList => keys::B,
+                    _ => keys::LEFT,
+                };
+                self.press(&[seat], key, 3);
+            }
+            match self.obs_of(seat).and_then(|o| o.chip_select) {
+                Some(cs) if cs.picked.len() > before => picked.push(id),
+                _ => {
+                    skip.insert(target);
+                }
+            }
+        }
+        picked.into_iter().flatten().collect()
+    }
+
+    /// Confirm both chip screens: START only while a window is open (it
+    /// pauses the battle otherwise).
+    fn confirm_both(&mut self) {
+        for _ in 0..8 {
+            for seat in 0..2 {
+                if self.obs_of(seat).and_then(|o| o.chip_select).is_some() {
+                    self.press(&[seat], keys::START, 3);
+                }
+                if self.obs_of(seat).and_then(|o| o.chip_select).is_some() {
+                    self.press(&[seat], keys::A, 3);
+                }
+            }
+            if (0..2).all(|s| self.obs_of(s).and_then(|o| o.chip_select).is_none()) {
+                break;
+            }
+            self.run(30);
+        }
+        self.run(90);
+    }
+
+    /// Use `seat`'s next queued chip: A until its queue shrinks.
+    fn use_chip(&mut self, seat: usize) -> bool {
+        let len = |x: &Explorer| x.obs_of(seat).map_or(0, |o| o.queue.len());
+        let before = len(self);
+        if before == 0 {
+            return false;
+        }
+        for _ in 0..30 {
+            self.press(&[seat], keys::A, 3);
+            if len(self) < before {
+                return true;
+            }
+            self.run(10);
+        }
+        false
+    }
+
+    /// Move `seat` to row `row` (1-3).
+    fn to_row(&mut self, seat: usize, row: u8) {
+        for _ in 0..4 {
+            let y = self.shared.lock().unwrap().tiles[seat].1;
+            if y == row {
+                return;
+            }
+            self.press(&[seat], if y > row { keys::UP } else { keys::DOWN }, 3);
+            self.run(12);
+        }
     }
 
     fn shot(&self, name: &str) {
@@ -287,6 +422,123 @@ fn lab(x: &mut Explorer, names: &dyn Fn(u16) -> String, want: &[u16], log: &mut 
     writeln!(log, "lab done at tick {}; untested {missing:?}", x.tick).unwrap();
 }
 
+/// The `duel` command: seat 1 sets each defensive chip (barriers, auras,
+/// Anti- traps, ElemTrap, Invisibl) and seat 0 then attacks it from the
+/// same row: a chip that triggers traps (SpoutMan, Vulcan, Recov50 for
+/// AntiRecv...) or a charged shot. Seat 1 never hits back, so it should
+/// also be driven into Anger. Both cores' RAM and screenshots are saved
+/// before, after setting, and after the hit.
+fn duel(x: &mut Explorer, names: &dyn Fn(u16) -> String, folder: &[u16], log: &mut std::fs::File) {
+    const DEF: &[&str] = &[
+        "AntiDmg", "AntiNavi", "AntiRecv", "AntiSwrd", "ElemTrap", "Barrier", "Barr100", "Barr200", "BblWrap",
+        "LifeAur", "Invisibl",
+    ];
+    const ATK: &[&str] = &["SpoutMan", "Recov50", "SuprVulc", "Vulcan1", "AirRaid3", "AirSpin3"];
+    let rank = |list: &[&str], id: u16| list.iter().position(|n| *n == names(id)).map(|r| r as u32);
+    let def: Vec<u16> = folder.iter().copied().filter(|&id| rank(DEF, id).is_some()).collect();
+    let emotion = |x: &Explorer, seat: usize| {
+        x.obs_of(seat).and_then(|o| o.raw).map(|r| {
+            let at = |a: u32| r[(a - 0x0200_0000) as usize];
+            (at(0x0203_52cc), at(0x0203_ce2c), at(0x0203_ce90))
+        })
+    };
+    let mut tested = std::collections::HashSet::new();
+    let mut n = 0;
+    for round in 0..24 {
+        if def.iter().all(|id| tested.contains(id)) {
+            break;
+        }
+        x.open_chip_select();
+        for seat in 0..2 {
+            let cs = x.obs_of(seat).and_then(|o| o.chip_select);
+            let hand: Vec<String> = cs.as_ref().map_or(vec![], |cs| {
+                cs.hand.iter().map(|c| c.map_or("--".into(), |c| names(c.id))).collect()
+            });
+            writeln!(
+                log,
+                "{:>6} seat{seat} chip select {} cursor {:?} hand {hand:?}",
+                x.tick,
+                cs.is_some(),
+                cs.map(|c| c.cursor)
+            )
+            .unwrap();
+        }
+        // Useful chips first, then anything, so the hand keeps cycling:
+        // unpicked chips stay in hand for the next chip select.
+        let d = x.pick(1, &|id| {
+            Some(if tested.contains(&id) {
+                100
+            } else {
+                rank(DEF, id).unwrap_or(100)
+            })
+        });
+        let a = x.pick(0, &|id| Some(rank(ATK, id).unwrap_or(100)));
+        writeln!(
+            log,
+            "{:>6} round {round}: seat1 {:?} seat0 {:?}",
+            x.tick,
+            d.iter().map(|&i| names(i)).collect::<Vec<_>>(),
+            a.iter().map(|&i| names(i)).collect::<Vec<_>>()
+        )
+        .unwrap();
+        x.confirm_both();
+        let queue = x.obs_of(1).map(|o| o.queue).unwrap_or_default();
+        // Only the untested defenses, which were picked first; the fillers
+        // behind them are never used, so seat 1 never hits back.
+        let useful: Vec<u16> = queue
+            .into_iter()
+            .take_while(|&id| rank(DEF, id).is_some() && !tested.contains(&id))
+            .collect();
+        for id in useful {
+            n += 1;
+            let tag = format!("{n:02}_{}", names(id));
+            let row = x.shared.lock().unwrap().tiles[1].1;
+            x.to_row(0, row);
+            x.snapshot_both(&format!("{tag}_pre"));
+            x.use_chip(1);
+            x.run(60);
+            x.snapshot_both(&format!("{tag}_set"));
+            x.shot(&format!("{tag}_set"));
+            x.run(90);
+            x.snapshot_both(&format!("{tag}_up"));
+            if let Some(o) = x.obs_of(1) {
+                writeln!(log, "{:>6} {tag} up: {:?}", x.tick, o.units[1]).unwrap();
+            }
+            x.shot(&format!("{tag}_up"));
+            let row = x.shared.lock().unwrap().tiles[1].1;
+            x.to_row(0, row);
+            let next0 = x.obs_of(0).and_then(|o| o.queue.first().copied());
+            let with = if next0.is_some_and(|id| rank(ATK, id).is_some()) && x.use_chip(0) {
+                "chip"
+            } else {
+                x.press(&[0], keys::B, 110);
+                "charge"
+            };
+            x.run(90);
+            x.snapshot_both(&format!("{tag}_hit"));
+            x.shot(&format!("{tag}_hit"));
+            let s = x.shared.lock().unwrap();
+            writeln!(
+                log,
+                "{:>6} {tag}: hit with {with}; hp {:?}; emotion bytes (352cc, ce2c, ce90) c0 {:?} c1 {:?}",
+                x.tick,
+                s.hp,
+                emotion(x, 0),
+                emotion(x, 1)
+            )
+            .unwrap();
+            drop(s);
+            tested.insert(id);
+        }
+    }
+    let missing: Vec<String> = def
+        .iter()
+        .filter(|id| !tested.contains(id))
+        .map(|&id| names(id))
+        .collect();
+    writeln!(log, "duel done at tick {}; untested {missing:?}", x.tick).unwrap();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let [_, save, script, out] = &args[..] else {
@@ -396,6 +648,10 @@ fn main() {
                     f.write_all(&x.snapshot()).unwrap();
                     x.run(step);
                 }
+            }
+            "duel" => {
+                duel(&mut x, &names, &folder, &mut log);
+                continue;
             }
             "lab" => {
                 lab(&mut x, &names, &folder, &mut log);

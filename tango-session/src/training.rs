@@ -301,6 +301,13 @@ impl crate::Drive for Driver {
 }
 
 impl Driver {
+    /// The newest confirmed battle reading, with both cores' details: the
+    /// host's view, not the opponent's (which gets only its own detail).
+    /// For a test harness scripting both seats.
+    pub fn last_battle(&self) -> Option<&BattleObs> {
+        self.last_battle.as_ref()
+    }
+
     /// Install `opponent` on the other core from the next tick, in place
     /// of whatever [`Kind`](opponent::Kind) built — for a host (or a
     /// test harness) with an opponent of its own. Picking a kind later
