@@ -19,6 +19,7 @@
 //!   obs                          print seat 1's decoded observation to log.txt
 //!   lab                          use every chip in the folder once (see `lab`)
 //!   duel                         seat 1 sets defenses, seat 0 attacks them (see `duel`)
+//!   roads                        lay each road under seat 0 and follow it (see `roads`)
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -539,6 +540,69 @@ fn duel(x: &mut Explorer, names: &dyn Fn(u16) -> String, folder: &[u16], log: &m
     writeln!(log, "duel done at tick {}; untested {missing:?}", x.tick).unwrap();
 }
 
+/// The `roads` command: seat 1 lays each road (GoingRd, ComingRd) in
+/// seat 0's row while seat 0 stands still, and the log follows both
+/// players' tiles, to see which way a road carries whoever stands on it.
+fn roads(x: &mut Explorer, names: &dyn Fn(u16) -> String, log: &mut std::fs::File) {
+    const ROADS: &[&str] = &["GoingRd", "ComingRd"];
+    let rank = |id: u16| ROADS.iter().position(|n| *n == names(id)).map(|r| r as u32);
+    let mut done = std::collections::HashSet::new();
+    for round in 0..16 {
+        if done.len() == ROADS.len() {
+            break;
+        }
+        x.open_chip_select();
+        let picked = x.pick(1, &|id| {
+            Some(if done.contains(&id) {
+                100
+            } else {
+                rank(id).unwrap_or(100)
+            })
+        });
+        x.pick(0, &|_| Some(100));
+        x.confirm_both();
+        writeln!(
+            log,
+            "{:>6} round {round}: seat1 {:?}",
+            x.tick,
+            picked.iter().map(|&i| names(i)).collect::<Vec<_>>()
+        )
+        .unwrap();
+        let queue = x.obs_of(1).map(|o| o.queue).unwrap_or_default();
+        let Some(&id) = queue.first().filter(|&&id| rank(id).is_some() && !done.contains(&id)) else {
+            continue;
+        };
+        let row = x.shared.lock().unwrap().tiles[0].1;
+        x.to_row(1, row);
+        x.use_chip(1);
+        for step in 0..30 {
+            x.run(10);
+            let s = x.shared.lock().unwrap();
+            let field = x.obs_of(1).map(|o| {
+                use tango_match::telemetry::GameDetail;
+                o.summary()
+                    .lines()
+                    .filter(|l| l.starts_with("field"))
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            });
+            writeln!(
+                log,
+                "{:>6} {} +{:3}: tiles p1 {:?} p2 {:?} {}",
+                x.tick,
+                names(id),
+                step * 10,
+                s.tiles[0],
+                s.tiles[1],
+                field.unwrap_or_default()
+            )
+            .unwrap();
+        }
+        x.shot(&format!("road_{}", names(id)));
+        done.insert(id);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let [_, save, script, out] = &args[..] else {
@@ -648,6 +712,10 @@ fn main() {
                     f.write_all(&x.snapshot()).unwrap();
                     x.run(step);
                 }
+            }
+            "roads" => {
+                roads(&mut x, &names, &mut log);
+                continue;
             }
             "duel" => {
                 duel(&mut x, &names, &folder, &mut log);

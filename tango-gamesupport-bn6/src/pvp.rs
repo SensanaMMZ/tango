@@ -540,7 +540,7 @@ fn read_observation(
 ) -> Option<crate::observe::Bn6Obs> {
     use crate::observe::{
         Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, Obstacle, ObstacleKind,
-        Panel, PanelKind, UnitDetail,
+        Panel, PanelKind, Status, UnitDetail,
     };
 
     // The charge and form tables are laid out per unit slot, like the
@@ -555,23 +555,32 @@ fn read_observation(
             _ => Charge::Full,
         };
         let form = Form::from_raw(core.raw_read_8(ewram.form + slot * 0x10, -1));
-        let status = ewram.status + slot * 0xa8;
-        let barrier_hp = core.raw_read_8(status + 0x1e, -1);
+        // The unit's own collision record, through its pointer
+        // (`BattleObject.CollisionDataPtr`): records are pooled, so a
+        // player's isn't at a fixed slot.
+        let coll = core.raw_read_32(unit_field(ewram, slot, 0x54), -1);
+        if !(0x0200_0000..0x0204_0000).contains(&coll) {
+            return None;
+        }
+        let barrier_hp = core.raw_read_8(coll + 0x16, -1);
         let barrier = (barrier_hp != 0).then(|| Barrier {
-            kind: BarrierKind::from_raw(core.raw_read_8(status + 0x0e, -1)),
+            kind: BarrierKind::from_raw(core.raw_read_8(coll + 0x06, -1)),
             hp: barrier_hp,
-            threshold: core.raw_read_8(status + 0x1f, -1),
+            threshold: core.raw_read_8(coll + 0x17, -1),
         });
-        let invisible_ticks = core.raw_read_16(status + 0x2c, -1);
-        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks));
+        let invisible_ticks = core.raw_read_16(coll + 0x24, -1);
+        let status = Status(core.raw_read_32(coll + 0x3c, -1));
+        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks, status));
     }
     let units = [0, 1].map(|p: usize| {
-        units[p].map(|(form, charge, barrier, invisible_ticks)| UnitDetail {
+        units[p].map(|(form, charge, barrier, invisible_ticks, status)| UnitDetail {
             form,
             beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
             charge,
             barrier,
             invisible_ticks,
+            status,
+            mood: core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1),
         })
     });
     let units = [units[0]?, units[1]?];
@@ -815,20 +824,21 @@ struct EWRAMOffsets {
     /// The hand: 8 × u16 `(code << 9) | id`, `0xffff` once picked. Read
     /// against the screen (Vulcan1 * = `0x3405`).
     hand: u32,
-    /// The field: tile `(x, y)`'s panel kind at `+ (y - 1) * 0x100 +
-    /// (x - 1) * 0x20`, its owner in the byte after. Mapped by using each
-    /// panel chip (CrakShot, the seeds, Snctuary, Geddon, the roads).
+    /// The field: tile `(x, y)`'s `PanelData.Type` at `+ (y - 1) * 0x100 +
+    /// (x - 1) * 0x20`, its `Alliance` (owner) in the byte after
+    /// (`ePanelData1_1` + 2 in the disassembly). Values mapped by using each
+    /// panel chip (CrakShot, the seeds, Snctuary, Geddon, the roads); the
+    /// struct's `Animation` byte trails `Type` by a tick when a panel breaks.
     panels: u32,
     /// Obstacle records, `0xd8` apart: `+2` tile x, `+3` tile y, `+0x14`
     /// HP, `+0x16` max HP, `+0x18` kind. Found by spawning each object on
     /// a fresh tile; HP matched each chip's (RockCube 200, Fan 40, music
     /// boxes 60).
     obstacles: u32,
-    /// Per unit slot, `0xa8` apart (the players' records in the battle
-    /// object pool): `+0x0e` barrier kind, `+0x1e` barrier HP, `+0x1f`
-    /// aura threshold, `+0x2c` u16 invisibility ticks. Found in the
-    /// `bn6_explore` duel: Barr200 read 200 and 150 after a 50-damage hit.
-    status: u32,
+    /// Per player, `0x64` apart: the battle copy of the navi's stats
+    /// (`eBattleNaviStats` in the bn6f disassembly's `ewram.s`): `+0x0e`
+    /// Mood, `+0x21` BeastOutCounter, `+0x2c` Transformation.
+    navi_stats: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -997,9 +1007,9 @@ static EWRAM_OFFSETS: EWRAMOffsets = EWRAMOffsets {
     picked_slots:           0x02036508,
     form_picked:            0x0203664b,
     hand:                   0x0203cdb0,
-    panels:                 0x02039c06,
+    panels:                 0x02039c02,
     obstacles:              0x0203cff0,
-    status:                 0x020384e8,
+    navi_stats:             0x0203ce00,
 };
 
 #[derive(Clone, Copy)]

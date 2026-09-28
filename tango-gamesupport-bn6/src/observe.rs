@@ -122,8 +122,11 @@ pub enum PanelKind {
     Holy,
     Grass,
     Ice,
-    /// Conveyor panels from GoingRd / ComingRd. Which way each pushes is
-    /// still to be checked; the names follow the chip that made them.
+    /// Conveyor panels from GoingRd / ComingRd, named after the chip.
+    /// ComingRd's carried a player standing on it toward the chip's user
+    /// (player 1 laid it; player 0 slid from column 1 to 3); GoingRd's
+    /// presumably push the other way (unconfirmed: the player on it was
+    /// already against the back edge). Both take ~130 ticks to appear.
     GoingRoad,
     ComingRoad,
     /// Not yet mapped (volcano and others).
@@ -215,6 +218,55 @@ pub struct UnitDetail {
     pub barrier: Option<Barrier>,
     /// Ticks of invisibility left (Invisibl), 0 when visible.
     pub invisible_ticks: u16,
+    /// The game's status flags for this player (`ObjectFlags1`).
+    pub status: Status,
+    /// The emotion, raw (`NaviStats.Mood`): 128 in the normal state. The
+    /// other values (Full Synchro, Anger, Tired, Exhausted) are still to be
+    /// mapped in play.
+    pub mood: u8,
+}
+
+/// A player's status flags, the game's `ObjectFlags1` word (bits named in
+/// the bn6f disassembly, `include/structs/CollisionData.inc`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Status(pub u32);
+
+impl Status {
+    const NAMES: &'static [(u32, &'static str)] = &[
+        (0x0000_0002, "invisible"),
+        (0x0000_0400, "flinching"),
+        (0x0000_0800, "paralyzed"),
+        (0x0000_2000, "blind"),
+        (0x0000_4000, "immobilized"),
+        (0x0000_8000, "confused"),
+        (0x0001_0000, "frozen"),
+        (0x0002_0000, "super armor"),
+        (0x0004_0000, "undershirt"),
+        (0x0020_0000, "anger"),
+        (0x8000_0000, "bubbled"),
+    ];
+
+    pub fn paralyzed(self) -> bool {
+        self.0 & 0x0800 != 0
+    }
+    pub fn flinching(self) -> bool {
+        self.0 & 0x0400 != 0
+    }
+    pub fn anger(self) -> bool {
+        self.0 & 0x0020_0000 != 0
+    }
+    pub fn super_armor(self) -> bool {
+        self.0 & 0x0002_0000 != 0
+    }
+
+    /// The set flags' names, for display.
+    pub fn names(self) -> Vec<&'static str> {
+        Self::NAMES
+            .iter()
+            .filter(|(bit, _)| self.0 & bit != 0)
+            .map(|(_, n)| *n)
+            .collect()
+    }
 }
 
 /// A barrier or aura on a player. Traps (the Anti- chips, ElemTrap) are
@@ -253,8 +305,10 @@ impl BarrierKind {
     }
 }
 
-/// A player's form. Crosses are numbered by their place in the Cross
-/// list, from 1 (on Gregar: Heat, Elec, Slash, Erase, Charge).
+/// A player's form, the game's `TF_` transformation enum (named in the
+/// bn6f disassembly, `constants/constants.inc`). Crosses are numbered 1-10:
+/// Heat, Elec, Slash, Erase, Charge (Gregar), Spout, Tomahawk, Tengu,
+/// Ground, Dust (Falzar).
 ///
 /// A Cross Beast is a Cross and Beast Out together. It takes two chip
 /// selects, in either order, and while it lasts each later chip select
@@ -265,23 +319,24 @@ pub enum Form {
     Cross(u8),
     BeastOut,
     CrossBeast(u8),
-    /// After Beast Out runs out. 23 on Gregar (reported in play); Falzar's
-    /// value is unchecked.
+    /// After Beast Out runs out (23 on Gregar, confirmed in play; 24 on
+    /// Falzar).
     BeastOver,
     /// A value not yet mapped (Falzar's crosses and Beast Over, mods).
     Unknown(u8),
 }
 
 impl Form {
-    /// Decode the game's form byte: 0 or 255 normal, 1-5 a Cross, 11 Beast
-    /// Out, 12 + n Cross Beast with Cross n, 23 Beast Over (Gregar).
+    /// Decode the game's form byte: 0 (or 255) normal, 1-10 a Cross, 11-12
+    /// Beast Out (Gregar, Falzar), 12 + n Cross Beast with Cross n, 23-24
+    /// Beast Over.
     pub fn from_raw(raw: u8) -> Self {
         match raw {
             0 | 0xff => Form::Normal,
-            1..=5 => Form::Cross(raw),
-            11 => Form::BeastOut,
-            13..=17 => Form::CrossBeast(raw - 12),
-            23 => Form::BeastOver,
+            1..=10 => Form::Cross(raw),
+            11 | 12 => Form::BeastOut,
+            13..=22 => Form::CrossBeast(raw - 12),
+            23 | 24 => Form::BeastOver,
             _ => Form::Unknown(raw),
         }
     }
@@ -311,6 +366,13 @@ impl tango_match::telemetry::GameDetail for Bn6Obs {
             }
             if u.invisible_ticks > 0 {
                 extra += &format!(" · invisible {}", u.invisible_ticks);
+            }
+            if u.mood != 128 {
+                extra += &format!(" · mood {}", u.mood);
+            }
+            let flags = u.status.names();
+            if !flags.is_empty() {
+                extra += &format!(" · [{}]", flags.join(", "));
             }
             lines.push(format!(
                 "P{}{me}: {} · beast {} left · {}{extra}",
@@ -426,6 +488,8 @@ mod tests {
         assert_eq!(Form::from_raw(13), Form::CrossBeast(1));
         assert_eq!(Form::from_raw(14), Form::CrossBeast(2));
         assert_eq!(Form::from_raw(23), Form::BeastOver);
-        assert_eq!(Form::from_raw(12), Form::Unknown(12));
+        assert_eq!(Form::from_raw(12), Form::BeastOut);
+        assert_eq!(Form::from_raw(22), Form::CrossBeast(10));
+        assert_eq!(Form::from_raw(25), Form::Unknown(25));
     }
 }
