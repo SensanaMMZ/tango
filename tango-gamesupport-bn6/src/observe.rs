@@ -130,6 +130,11 @@ pub enum PanelKind {
     Holy,
     Grass,
     Ice,
+    /// Volcano (brown craters): a stage's back columns in some random
+    /// stages (`bn6_stages`).
+    Volcano,
+    /// Probably no panel at all (the game's 0); unconfirmed.
+    Empty,
     /// Conveyor panels from GoingRd / ComingRd, named after the chip:
     /// GoingRd's push a player standing on them back, ComingRd's pull them
     /// forward to the front panels (both confirmed in play; ComingRd also
@@ -150,7 +155,9 @@ impl PanelKind {
             0x04 => PanelKind::Poison,
             0x05 => PanelKind::Holy,
             0x06 => PanelKind::Grass,
+            0x00 => PanelKind::Empty,
             0x07 => PanelKind::Ice,
+            0x08 => PanelKind::Volcano,
             0x0b => PanelKind::GoingRoad,
             0x0c => PanelKind::ComingRoad,
             other => PanelKind::Unknown(other),
@@ -175,6 +182,8 @@ pub enum ObstacleKind {
     RockCube,
     /// The cube some stages start with.
     StageCube,
+    /// The boulder some stages start with (500 HP).
+    StageRock,
     Fan,
     Discord,
     Timpani,
@@ -191,6 +200,7 @@ pub enum ObstacleKind {
 impl ObstacleKind {
     pub fn from_raw(raw: u8) -> Self {
         match raw {
+            0xce => ObstacleKind::StageRock,
             0xd0 => ObstacleKind::RockCube,
             0xd1 => ObstacleKind::StageCube,
             0xd5 => ObstacleKind::BlackBomb,
@@ -526,6 +536,8 @@ impl tango_match::telemetry::GameDetail for Bn6Obs {
             PanelKind::Holy => 'H',
             PanelKind::Grass => 'G',
             PanelKind::Ice => 'I',
+            PanelKind::Volcano => 'V',
+            PanelKind::Empty => ' ',
             PanelKind::GoingRoad => '>',
             PanelKind::ComingRoad => '<',
             PanelKind::Unknown(_) => '?',
