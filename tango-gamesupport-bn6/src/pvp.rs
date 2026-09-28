@@ -539,8 +539,8 @@ fn read_observation(
     player: usize,
 ) -> Option<crate::observe::Bn6Obs> {
     use crate::observe::{
-        Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, Obstacle, ObstacleKind,
-        Panel, PanelKind, Status, UnitDetail,
+        Barrier, BarrierKind, Bn6Obs, Charge, ChipSelect, Cursor, Form, FormPick, HandChip, NaviCust, Obstacle,
+        ObstacleKind, Panel, PanelKind, Status, UnitDetail,
     };
 
     // The charge and form tables are laid out per unit slot, like the
@@ -579,11 +579,19 @@ fn read_observation(
             charge,
             barrier,
             invisible_ticks,
-            status,
-            mood: core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1),
+            // The other player: only what shows on screen.
+            status: if p == player {
+                status
+            } else {
+                Status(status.0 & !Status::NAVICUST_BITS)
+            },
+            mood: (p == player).then(|| core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1)),
         })
     });
     let units = [units[0]?, units[1]?];
+    let mut own_stats = [0u8; 0x64];
+    core.raw_read_range(ewram.navi_stats + player as u32 * 0x64, -1, &mut own_stats);
+    let navicust = NaviCust::from_stats(&own_stats);
 
     let chip_select = (core.raw_read_8(ewram.chip_select_open, -1) == 0xff).then(|| {
         let raw_cursor = core.raw_read_8(ewram.chip_select_cursor, -1);
@@ -660,6 +668,7 @@ fn read_observation(
         chip_select,
         queue,
         units,
+        navicust,
         panels,
         obstacles,
         #[cfg(feature = "ram-probe")]
@@ -837,7 +846,8 @@ struct EWRAMOffsets {
     obstacles: u32,
     /// Per player, `0x64` apart: the battle copy of the navi's stats
     /// (`eBattleNaviStats` in the bn6f disassembly's `ewram.s`): `+0x0e`
-    /// Mood, `+0x21` BeastOutCounter, `+0x2c` Transformation.
+    /// Mood, `+0x21` BeastOutCounter, `+0x2c` Transformation, and every
+    /// NaviCust family's level at its family number.
     navi_stats: u32,
 }
 
