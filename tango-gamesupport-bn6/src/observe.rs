@@ -130,11 +130,11 @@ pub enum PanelKind {
     Holy,
     Grass,
     Ice,
-    /// Conveyor panels from GoingRd / ComingRd, named after the chip.
-    /// ComingRd's carried a player standing on it toward the chip's user
-    /// (player 1 laid it; player 0 slid from column 1 to 3); GoingRd's
-    /// presumably push the other way (unconfirmed: the player on it was
-    /// already against the back edge). Both take ~130 ticks to appear.
+    /// Conveyor panels from GoingRd / ComingRd, named after the chip:
+    /// GoingRd's push a player standing on them back, ComingRd's pull them
+    /// forward to the front panels (both confirmed in play; ComingRd also
+    /// in the `roads` probe). Both take ~130 ticks to appear. Stages have
+    /// two more kinds, pushing up and down, that no chip makes.
     GoingRoad,
     ComingRoad,
     /// Not yet mapped (volcano and others).
