@@ -259,8 +259,8 @@ pub enum Emotion {
     /// mood meter freezes). Came on the moment the Beast Out counter ran
     /// out and stayed for the rest of the battle: Tired.
     Tired,
-    /// The game's code 2, mood at 255. Presumed Full Synchro (a counter
-    /// hit maxing the meter); unconfirmed.
+    /// The game's code 2, mood at 255: a counter hit maxes the meter
+    /// (confirmed in play).
     FullSynchro,
     /// `AIData.Anger` set; matches the `anger` status flag in play.
     Anger,
