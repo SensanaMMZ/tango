@@ -34,7 +34,9 @@ pub struct Bn6Obs {
     /// undershirt, shoes).
     pub units: [UnitDetail; 2],
     /// This player's own NaviCust effects (never the other player's,
-    /// which is hidden from a human opponent too).
+    /// which is hidden from a human opponent too). Empty while Exhausted,
+    /// which strips every part: the game leaves the stats bytes set and
+    /// disables them elsewhere, so this applies that rule itself.
     pub navicust: NaviCust,
     /// The field, `panels[y][x]` for tile `(x + 1, y + 1)`: rows top to
     /// bottom, columns left to right (columns 1-3 are player 0's side at
@@ -235,6 +237,7 @@ pub struct UnitDetail {
     /// For the other player only Full Synchro and Anger, which show on
     /// screen; Tired and Exhausted don't, so a bot tracks them itself from
     /// the Beast Out (then Tired) and Beast Over (then Exhausted) it saw.
+    /// Exhausted also strips every NaviCust part and drains HP each frame.
     pub emotion: Emotion,
 }
 
@@ -242,29 +245,31 @@ pub struct UnitDetail {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Emotion {
     Normal,
-    /// `AIData.Unk_32` set (0xffff until cleared); the mood meter is
-    /// frozen while it lasts.
+    /// The game's code 1, `AIData.Unk_32` set (0xffff until cleared; the
+    /// mood meter freezes). Came on the moment the Beast Out counter ran
+    /// out and stayed for the rest of the battle: Tired.
+    Tired,
+    /// The game's code 2, mood at 255. Presumed Full Synchro (a counter
+    /// hit maxing the meter); unconfirmed.
     FullSynchro,
-    /// The game's code 2: mood at 255. Which face this is is unconfirmed.
-    Code2,
-    /// `AIData.Anger` set.
+    /// `AIData.Anger` set; matches the `anger` status flag in play.
     Anger,
-    /// The game's code 5: `AIData.Unk_36` set, or mood at 0. Likely the
-    /// peril/exhausted face; unconfirmed.
-    Code5,
+    /// The game's code 5, `AIData.Unk_36` set (or mood at 0). Came on
+    /// after Beast Over, with HP draining every frame down to 1: Exhausted.
+    Exhausted,
 }
 
 impl Emotion {
     /// The game's decision, from the three `AIData` words and the mood.
-    pub fn decide(unk_36: u16, anger: u16, full_synchro: u16, mood: u8) -> Self {
+    pub fn decide(unk_36: u16, anger: u16, tired: u16, mood: u8) -> Self {
         if unk_36 != 0 || mood == 0 {
-            Emotion::Code5
+            Emotion::Exhausted
         } else if anger != 0 {
             Emotion::Anger
-        } else if full_synchro != 0 {
-            Emotion::FullSynchro
+        } else if tired != 0 {
+            Emotion::Tired
         } else if mood == 0xff {
-            Emotion::Code2
+            Emotion::FullSynchro
         } else {
             Emotion::Normal
         }
@@ -671,11 +676,11 @@ mod tests {
     #[test]
     fn emotion_follows_the_games_precedence() {
         assert_eq!(Emotion::decide(0, 0, 0, 128), Emotion::Normal);
-        assert_eq!(Emotion::decide(0, 0, 0xffff, 128), Emotion::FullSynchro);
+        assert_eq!(Emotion::decide(0, 0, 0xffff, 128), Emotion::Tired);
         assert_eq!(Emotion::decide(0, 60, 0xffff, 128), Emotion::Anger);
-        assert_eq!(Emotion::decide(1, 60, 0xffff, 128), Emotion::Code5);
-        assert_eq!(Emotion::decide(0, 0, 0, 0), Emotion::Code5);
-        assert_eq!(Emotion::decide(0, 0, 0, 255), Emotion::Code2);
+        assert_eq!(Emotion::decide(1, 60, 0xffff, 128), Emotion::Exhausted);
+        assert_eq!(Emotion::decide(0, 0, 0, 0), Emotion::Exhausted);
+        assert_eq!(Emotion::decide(0, 0, 0, 255), Emotion::FullSynchro);
     }
 
     #[test]

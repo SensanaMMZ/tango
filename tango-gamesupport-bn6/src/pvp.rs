@@ -554,7 +554,6 @@ fn read_observation(
             1 => Charge::Charging(core.raw_read_8(charge_base + 0x9b, -1)),
             _ => Charge::Full,
         };
-        let form = Form::from_raw(core.raw_read_8(ewram.form + slot * 0x10, -1));
         // The unit's own collision record, through its pointer
         // (`BattleObject.CollisionDataPtr`): records are pooled, so a
         // player's isn't at a fixed slot.
@@ -576,41 +575,47 @@ fn read_observation(
             return None;
         }
         let emotion_words = [0x36, 0x34, 0x32].map(|o| core.raw_read_16(ai + o, -1));
-        *units.get_mut(owner)? = Some((form, charge, barrier, invisible_ticks, status, emotion_words));
+        *units.get_mut(owner)? = Some((charge, barrier, invisible_ticks, status, emotion_words));
     }
     let units = [0, 1].map(|p: usize| {
-        units[p].map(
-            |(form, charge, barrier, invisible_ticks, status, [unk_36, anger, full_synchro])| {
-                let mood = core.raw_read_8(ewram.navi_stats + p as u32 * 0x64 + 0x0e, -1);
-                UnitDetail {
-                    form,
-                    beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
-                    charge,
-                    barrier,
-                    invisible_ticks,
-                    // The other player: only what shows on screen.
-                    status: if p == player {
-                        status
-                    } else {
-                        Status(status.0 & !Status::NAVICUST_BITS)
-                    },
-                    mood: (p == player).then_some(mood),
-                    // The other player's emotion only as far as it shows: Full
-                    // Synchro and Anger do; Tired and Exhausted don't (a player
-                    // infers them from the Beast Out / Beast Over they saw).
-                    emotion: match Emotion::decide(unk_36, anger, full_synchro, mood) {
-                        e @ (Emotion::FullSynchro | Emotion::Anger) => e,
-                        _ if p != player => Emotion::Normal,
-                        e => e,
-                    },
-                }
-            },
-        )
+        units[p].map(|(charge, barrier, invisible_ticks, status, [unk_36, anger, tired])| {
+            let stats = ewram.navi_stats + p as u32 * 0x64;
+            let mood = core.raw_read_8(stats + 0x0e, -1);
+            // The form in effect (`NaviStats.Transformation`): set once a
+            // transformation lands, cleared when it ends.
+            let form = Form::from_raw(core.raw_read_8(stats + 0x2c, -1));
+            UnitDetail {
+                form,
+                beast_turns_left: core.raw_read_8(ewram.beast_turns + p as u32, -1),
+                charge,
+                barrier,
+                invisible_ticks,
+                // The other player: only what shows on screen.
+                status: if p == player {
+                    status
+                } else {
+                    Status(status.0 & !Status::NAVICUST_BITS)
+                },
+                mood: (p == player).then_some(mood),
+                // The other player's emotion only as far as it shows: Full
+                // Synchro and Anger do; Tired and Exhausted don't (a player
+                // infers them from the Beast Out / Beast Over they saw).
+                emotion: match Emotion::decide(unk_36, anger, tired, mood) {
+                    e @ (Emotion::FullSynchro | Emotion::Anger) => e,
+                    _ if p != player => Emotion::Normal,
+                    e => e,
+                },
+            }
+        })
     });
     let units = [units[0]?, units[1]?];
     let mut own_stats = [0u8; 0x64];
     core.raw_read_range(ewram.navi_stats + player as u32 * 0x64, -1, &mut own_stats);
-    let navicust = NaviCust::from_stats(&own_stats);
+    let navicust = if units[player].emotion == Emotion::Exhausted {
+        NaviCust::default()
+    } else {
+        NaviCust::from_stats(&own_stats)
+    };
 
     let chip_select = (core.raw_read_8(ewram.chip_select_open, -1) == 0xff).then(|| {
         let raw_cursor = core.raw_read_8(ewram.chip_select_cursor, -1);
@@ -828,12 +833,6 @@ struct EWRAMOffsets {
     /// (caps at 90), `+0x9d` u8 charge level (0 none, 1 charging, 2
     /// full). Found holding B and watching both climb.
     charge: u32,
-    /// Per unit slot, `0x10` apart: the form byte ([`Form::from_raw`]).
-    /// Found crossing each side into a different Cross, then Beast Out
-    /// in both orders (Heat then Beast read 13, Beast then Elec 14).
-    ///
-    /// [`Form::from_raw`]: crate::observe::Form::from_raw
-    form: u32,
     /// Per player, one byte each: Beast Out turns left, 3 → 2 → 1 as
     /// each Beast Out turn is spent (matches the counter by the HUD face).
     beast_turns: u32,
@@ -1028,7 +1027,6 @@ static EWRAM_OFFSETS: EWRAMOffsets = EWRAMOffsets {
     unit:                   0x0203a9b0,
     chip_blocks:            0x020349c0,
     charge:                 0x02034000,
-    form:                   0x0203a980,
     beast_turns:            0x0203528d,
     custom_gauge:           0x020352a1,
     chip_select_open:       0x02035288,

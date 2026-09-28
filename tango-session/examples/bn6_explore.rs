@@ -603,6 +603,78 @@ fn roads(x: &mut Explorer, names: &dyn Fn(u16) -> String, log: &mut std::fs::Fil
     }
 }
 
+/// The `beastover` command: seat 1 goes Beast Out, then keeps opening the
+/// chip screen until Beast Over and beyond, logging its form, emotion,
+/// mood, NaviCust readout and HP each turn, and HP every 20 ticks once
+/// it's Exhausted.
+fn beastover(x: &mut Explorer, log: &mut std::fs::File) {
+    use tango_gamesupport_bn6::observe::Form;
+    let report = |x: &Explorer, log: &mut std::fs::File, what: &str| {
+        if let Some(o) = x.obs_of(1) {
+            let u = o.units[1];
+            let n = o.navicust;
+            writeln!(
+                log,
+                "{:>6} {what}: form {:?} beast {} emotion {:?} mood {:?} hp {} · navicust atk {} armor {} undershirt {} air {} bugstop {}",
+                x.tick, u.form, u.beast_turns_left, u.emotion, u.mood, x.shared.lock().unwrap().hp[1],
+                n.attack, n.super_armor, n.undershirt, n.air_shoes, n.bug_stop
+            )
+            .unwrap();
+        }
+    };
+    // Turn 1: Beast Out (cursor to the star under OK, A), then confirm.
+    x.open_chip_select();
+    report(x, log, "start");
+    for _ in 0..5 {
+        x.press(&[1], keys::RIGHT, 3);
+    }
+    x.press(&[1], keys::DOWN, 3);
+    x.press(&[1], keys::A, 3);
+    x.confirm_both();
+    x.run(120);
+    x.confirm_both();
+    report(x, log, "after beast out");
+    let mut over_turns = 0;
+    for turn in 2..14 {
+        x.open_chip_select();
+        // Stay in Beast Out while it has turns: pick the star again.
+        if x.obs_of(1).is_some() {
+            for _ in 0..5 {
+                x.press(&[1], keys::RIGHT, 3);
+            }
+            x.press(&[1], keys::DOWN, 3);
+            x.press(&[1], keys::A, 3);
+        }
+        x.confirm_both();
+        x.run(120);
+        x.confirm_both();
+        x.run(60);
+        report(x, log, &format!("turn {turn}"));
+        x.shot(&format!("turn{turn:02}"));
+        if let Some(raw) = x.obs_of(1).and_then(|o| o.raw) {
+            let ns = 0x0203_ce64 - 0x0200_0000;
+            writeln!(
+                log,
+                "        navistats transformation {} beast {} | form table {}",
+                raw[ns + 0x2c],
+                raw[ns + 0x21],
+                raw[0x0203_a990 - 0x0200_0000]
+            )
+            .unwrap();
+        }
+        if matches!(x.obs_of(1).map(|o| o.units[1].form), Some(Form::BeastOver)) {
+            over_turns += 1;
+        }
+        if over_turns >= 2 {
+            break;
+        }
+    }
+    for _ in 0..10 {
+        x.run(20);
+        report(x, log, "drain");
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let [_, save, script, out] = &args[..] else {
@@ -712,6 +784,10 @@ fn main() {
                     f.write_all(&x.snapshot()).unwrap();
                     x.run(step);
                 }
+            }
+            "beastover" => {
+                beastover(&mut x, &mut log);
+                continue;
             }
             "roads" => {
                 roads(&mut x, &names, &mut log);
